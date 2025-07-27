@@ -5,6 +5,7 @@ from typing import List
 import random
 from openai import OpenAI
 import os
+import json
 
 
 load_dotenv()
@@ -28,51 +29,63 @@ class Player(BaseModel):
 class GameSetup(BaseModel):
     players: List[Player]
     rounds: int
-    topic: str = "random"
+    topic: str = "Random"
 
 @app.get("/")
 def read_root():
     return {"message": "Trivia backend is running!"}
 
+
 @app.post("/generate_questions/")
-async def generate_questions(setup: GameSetup):
+def generate_questions(setup: GameSetup):
     chosen_topic = random.choice(topics) if setup.topic == "random" else setup.topic
     questions = []
 
     for round_num in range(setup.rounds):
         for player in setup.players:
+            # Force prompt uniqueness by using player name and randomness
+            seed = random.randint(1000, 9999)
             prompt = (
-                f"Create one multiple-choice trivia question (with 4 options and correct answer) "
-                f"for a {player.age}-year-old about {chosen_topic}. Respond in JSON format like: "
-                f"{{'question': '...', 'options': [...], 'answer': '...'}}"
+                f"You are a trivia question generator. "
+                f"Create a fun, multiple-choice question for a {player.age}-year-old named {player.name}. "
+                f"Topic: {chosen_topic}. Each question must be unique across players and not a repeat of previous examples. "
+                f"Inject creativity and age-appropriate fun. Format your output as a JSON object with these keys: "
+                f"'question' (string), 'options' (list of 4 strings), and 'answer' (string). "
+                f"Use this random context ID to vary the question: {seed}."
             )
-            response = client.chat.completions.create(model="gpt-4",
-            messages=[
-                {"role": "system", "content": "You are a trivia game generator."},
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0.7)
-            content = response.choices[0].message.content
             try:
-                # Evaluate JSON response
-                question_data = eval(content)
+                response = client.chat.completions.create(
+                    model="gpt-4",
+                    messages=[
+                        {"role": "system", "content": "You generate trivia questions in JSON format."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    temperature=0.8
+                )
+
+                # Expecting a dict in the format: {"question": ..., "options": [...], "answer": ...}
+                q_json = json.loads(response.choices[0].message.content)
+
                 questions.append({
                     "player": player.name,
                     "age": player.age,
                     "round": round_num + 1,
                     "topic": chosen_topic,
-                    **question_data
+                    **q_json
                 })
-            except:
+
+            except Exception as e:
                 questions.append({
                     "player": player.name,
                     "age": player.age,
                     "round": round_num + 1,
                     "topic": chosen_topic,
-                    "question": "Error generating question",
-                    "options": [],
-                    "answer": ""
+                    "question": f"Error generating question: {str(e)}",
+                    "options": ["N/A", "N/A", "N/A", "N/A"],
+                    "answer": "N/A"
                 })
+    print(questions)
     return {"questions": questions}
+
 
 
