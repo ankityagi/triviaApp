@@ -11,7 +11,7 @@ import json
 load_dotenv()
 
 # Set the key globally
-api_key = os.getenv("REMOVED")
+api_key = os.getenv("OPENAI_API_KEY")
 
 client = OpenAI(api_key=api_key)
 
