@@ -1,2 +1,75 @@
-.env
-*bfg-report/**
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pyc
+*.so
+
+# Environment
+.venv/
+env/
+venv/
+ENV/
+*.env
+*.env.*
+
+# Conda environment
+*.conda
+*.lock
+conda-meta/
+*.yml
+
+# Jupyter
+.ipynb_checkpoints/
+
+# VS Code settings
+.vscode/
+.history/
+
+# Logs
+*.log
+logs/
+*.sqlite3
+
+# MacOS
+.DS_Store
+
+# OS/Editor specific
+Thumbs.db
+ehthumbs.db
+.idea/
+*.iml
+
+# Node/npm (in case frontend is added later)
+node_modules/
+*.tsbuildinfo
+
+# Streamlit cache and secrets
+.streamlit/config.toml
+.streamlit/secrets.toml
+
+# PyInstaller
+dist/
+build/
+*.spec
+
+# Test artifacts
+htmlcov/
+.coverage
+.cache/
+pytest_cache/
+
+# MyPy and Pyright
+.mypy_cache/
+.pyright/
+
+# Coverage reports
+coverage.xml
+*.cover
+
+# fastapi static or compiled assets
+staticfiles/
+
+# bfg
+..bfg-report/
