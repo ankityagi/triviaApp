@@ -25,7 +25,7 @@ Base.metadata.create_all(bind=engine)
 # Set the key globally
 api_key = os.getenv("OPENAI_API_KEY")
 client = OpenAI(api_key=api_key)
-testing = True
+testing = False
 app = FastAPI()
 
 
@@ -182,7 +182,7 @@ def generate_questions(setup: GameSetup, authorization: Optional[str] = Header(N
                 prompt = (
                     f"You are a trivia question generator. "
                     f"Create a fun, multiple-choice question for a {player.age}-year-old named {player.name}. "
-                    f"Topic: {chosen_topic}. Each question must be unique across players and not a repeat of previous examples. "
+                    f"Topic: {chosen_topic}. Each question must be unique across players and not a repeat of previous question. "
                     f"Inject creativity and age-appropriate fun. Format your output as a JSON object with these keys: "
                     f"'question' (string), 'options' (list of 4 strings), and 'answer' (string). "
                     f"Use this random context ID to vary the question: {seed}."

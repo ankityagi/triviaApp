@@ -127,7 +127,7 @@ if not st.session_state.questions:
         name = st.text_input(f"Player {i+1} Name", f"Player{i+1}")
         age = st.number_input(f"{name}'s Age", 3, 99, 8, key=f"age_{i}")
         players.append({"name": name, "age": age})
-        st.session_state.scores[name] = 0
+        
 
     rounds = st.slider("Rounds", 1, 5, 2)
     topic = st.selectbox("Topic", ["random", "Animals", "Space", "Science", "History", "Sports"])
@@ -138,6 +138,14 @@ if not st.session_state.questions:
             "rounds": rounds,
             "topic": topic
         }
+
+        #initialize score once start button is clicked
+        for i in range(num_players):
+            st.session_state.scores[players[i]["name"]] = 0
+
+        print(f"Total players = {len(players)}")
+        print(f"len of scores = {len(st.session_state.scores)}")
+        print(f"st.session_state.current_index {st.session_state.current_index}")
         with st.spinner("Generating questions..."):
             res = backend_post("/generate_questions/", json=setup)
             
@@ -181,10 +189,12 @@ else:
     st.success("🎉 Game Over!")
     st.header("Final Scores")
     sorted_scores = sorted(st.session_state.scores.items(), key=lambda x: x[1], reverse=True)
+    print(sorted_scores)
     for player, score in sorted_scores:
         st.write(f"**{player}:** {score} points")
 
     if st.button("Play Again"):
         for key in ["questions", "current_index", "scores", "answers"]:
             del st.session_state[key]
+            print(f"Cleared {key} from session state")
         st.rerun()
