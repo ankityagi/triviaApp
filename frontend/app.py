@@ -1,10 +1,15 @@
+from dotenv import load_dotenv
+import os
 import streamlit as st
 import requests
 import random
 from urllib.parse import urlencode
 
 # Constants
-BACKEND_URL = "http://localhost:8000"  # or your deployed backend
+load_dotenv()
+
+BACKEND_URL = os.getenv("BACKEND_URL")
+#BACKEND_URL = "http://localhost:8000"  # or your deployed backend
 
 #############################
 ## Auth Items
