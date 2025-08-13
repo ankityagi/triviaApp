@@ -8,7 +8,7 @@ from urllib.parse import urlencode
 # Constants
 load_dotenv()
 
-BACKEND_URL = os.getenv("BACKEND_URL")
+BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000")
 #BACKEND_URL = "http://localhost:8000"  # or your deployed backend
 
 #############################

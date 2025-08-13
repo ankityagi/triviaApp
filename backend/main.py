@@ -17,7 +17,10 @@ from pydantic import BaseModel
 
 
 
+# Load environment variables
 load_dotenv()
+FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:8501")
+BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000")
 # Create all tables defined in models.py
 print("Tables to create:", Base.metadata.tables.keys())
 Base.metadata.create_all(bind=engine)
@@ -35,8 +38,7 @@ app.add_middleware(SessionMiddleware, os.getenv("SECRET_KEY"))
 # CORS only (no session middleware)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:8501"],
-    allow_origins=["https://triviaapp.streamlit.app"],
+    allow_origins=[FRONTEND_URL],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -135,7 +137,7 @@ async def auth_callback(request: Request):
         # Generate signed token
         signed_token = generate_token(user_info)
         # Redirect with token in query param
-        return RedirectResponse(url=f"http://localhost:8501/?token={signed_token}")
+        return RedirectResponse(url=f"{FRONTEND_URL}/?token={signed_token}")
     except Exception as e:
         print(f"Error in auth callback: {str(e)}")
         raise HTTPException(status_code=500, detail="Authentication failed")
@@ -208,7 +210,6 @@ def generate_questions(setup: GameSetup, authorization: Optional[str] = Header(N
                         "topic": chosen_topic,
                         **q_json
                     })
-
                 except Exception as e:
                     questions.append({
                         "player": player.name,
