@@ -8,6 +8,11 @@ from urllib.parse import urlencode
 # Constants
 load_dotenv()
 
+# Set the filewather to none for production from environment variable
+if os.getenv("STREAMLIT_ENV") == "production":
+    st.set_option("server.fileWatcherType", "none")
+
+
 BACKEND_URL = os.getenv("BACKEND_URL")
 #BACKEND_URL = "http://localhost:8000"  # or your deployed backend
 
