@@ -42,7 +42,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-printf("CORS middleware added with frontend URL:", FRONTEND_URL)
+print("CORS middleware added with frontend URL:", FRONTEND_URL)
 # Google OAuth Setup
 oauth = OAuth()
 oauth.register(
