@@ -1,4 +1,3 @@
-
 from fastapi import FastAPI, Request, Depends, HTTPException, Header
 from starlette.middleware.sessions import SessionMiddleware
 from fastapi.responses import RedirectResponse, JSONResponse
@@ -63,12 +62,16 @@ def generate_token(user_info):
     return serializer.dumps(user_info)
 
 def verify_token(token):
+    print(f"[VERIFY TOKEN] Verifying token: {token}")
     try:
         user_info = serializer.loads(token, max_age=TOKEN_EXPIRY_SECONDS)
+        print(f"[VERIFY TOKEN] Token valid. User info: {user_info}")
         return user_info
     except SignatureExpired:
+        print("[VERIFY TOKEN] Token expired.")
         raise HTTPException(status_code=401, detail="Token expired")
     except BadSignature:
+        print("[VERIFY TOKEN] Invalid token signature.")
         raise HTTPException(status_code=401, detail="Invalid token")
 
 
@@ -99,7 +102,7 @@ def read_root():
 @app.get("/login")
 async def login(request: Request):
     redirect_uri = request.url_for("auth_callback")
-
+    print(f"[LOGIN] Redirecting to Google OAuth. Redirect URI: {redirect_uri}")
     return await oauth.google.authorize_redirect(request, redirect_uri)
 
 
@@ -107,22 +110,31 @@ async def login(request: Request):
 # Function to check if user is authenticated (token-based)
 @app.get("/me")
 async def get_current_user(authorization: Optional[str] = Header(None)):
+    print(f"[/me] Authorization header: {authorization}")
     if not authorization or not authorization.startswith("Bearer "):
+        print("[/me] Missing or invalid token format.")
         raise HTTPException(status_code=401, detail="Missing token")
     token = authorization.split(" ", 1)[1]
-    user_info = verify_token(token)
-    return JSONResponse(content=user_info)
-
-
+    try:
+        user_info = verify_token(token)
+        print(f"[/me] Token verified. User info: {user_info}")
+        return JSONResponse(content=user_info)
+    except Exception as e:
+        print(f"[/me] Token verification failed: {str(e)}")
+        raise
 
 @app.get("/auth/callback")
 async def auth_callback(request: Request):
     try:
+        print("[AUTH CALLBACK] Starting Google OAuth callback.")
         token = await oauth.google.authorize_access_token(request)
+        print(f"[AUTH CALLBACK] Received token: {token}")
         if "id_token" not in token:
+            print("[AUTH CALLBACK] Missing id_token in response.")
             raise HTTPException(status_code=400, detail="Missing id_token in response")
         user_info = await oauth.google.get("https://openidconnect.googleapis.com/v1/userinfo", token=token)
         user_info = user_info.json()
+        print(f"[AUTH CALLBACK] User info: {user_info}")
 
         db = SessionLocal()
         if not db.query(User).filter(User.email == user_info["email"]).first():
@@ -132,14 +144,20 @@ async def auth_callback(request: Request):
                 picture=user_info["picture"]
             ))
             db.commit()
+            print(f"[AUTH CALLBACK] New user added: {user_info['email']}")
+        else:
+            print(f"[AUTH CALLBACK] User already exists: {user_info['email']}")
         db.close()
 
         # Generate signed token
         signed_token = generate_token(user_info)
+        print(f"[AUTH CALLBACK] Generated signed token: {signed_token}")
         # Redirect with token in query param
-        return RedirectResponse(url=f"{FRONTEND_URL}/?token={signed_token}")
+        redirect_url = f"{FRONTEND_URL}/?token={signed_token}"
+        print(f"[AUTH CALLBACK] Redirecting to: {redirect_url}")
+        return RedirectResponse(url=redirect_url)
     except Exception as e:
-        print(f"Error in auth callback: {str(e)}")
+        print(f"[AUTH CALLBACK] Error: {str(e)}")
         raise HTTPException(status_code=500, detail="Authentication failed")
 
 
