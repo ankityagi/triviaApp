@@ -6,15 +6,15 @@ from .database import Base
 
 class User(Base):
     __tablename__ = "users"
-    email = Column(String, primary_key=True, index=True)
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    email = Column(String, index=True)
     name = Column(String)
     picture = Column(String)
 
-class QuestionLog(Base):
+class TriviaLog(Base):
     __tablename__ = "questions"
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
-    player = Column(String)
-    question = Column(String)
-    answer = Column(String)
+    user_id = Column(Integer, ForeignKey("users.id"), index=True)
     topic = Column(String)
-    round = Column(Integer)
+    rounds = Column(Integer)  # total rounds for the session
+    created_at = Column(DateTime, default=datetime.utcnow)

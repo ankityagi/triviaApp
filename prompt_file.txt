@@ -1,0 +1,64 @@
+# TriviaApp LLM Agent Prompt
+
+You are an expert LLM agent tasked with generating a full-stack trivia game web application. The project should include:
+
+## Features
+- Multiplayer trivia game with Google OAuth authentication
+- Frontend built with Streamlit
+- Backend built with FastAPI
+- SQLite database for persistence
+- OpenAI GPT-4 integration for generating trivia questions
+- Token-based authentication and session management
+- User statistics: track number of quizzes and rounds played per user
+- CORS support for frontend-backend communication
+
+## Backend Instructions
+- Use FastAPI for all API endpoints
+- Implement Google OAuth using Authlib
+- Store users in a `users` table (id, email, name, picture)
+- Store questions in a `questions` table (id, user_id, player, question, answer, topic, round)
+- Implement endpoints:
+  - `/login` for Google OAuth
+  - `/auth/callback` for OAuth callback
+  - `/me` for user info
+  - `/generate_questions/` to generate and log questions using OpenAI
+  - `/user_quiz_stats` to return user stats (quizzes and rounds played)
+- Use token-based authentication for protected endpoints
+- Save each generated question to the database, associating with the correct user and round
+
+## Frontend Instructions
+- Use Streamlit for UI
+- Implement Google login flow
+- Store and manage session state (token, user info, questions, scores)
+- Display game setup form (players, rounds, topic)
+- Show spinner while questions are being generated
+- Prevent multiple clicks on Start Game button during question generation
+- Display questions, collect answers, and show scores
+- Allow users to view their stats
+
+## Database Instructions
+- Use SQLite for local development
+- Define models for User and QuestionLog
+- Track user_id and round in QuestionLog
+- Support queries for unique users and rounds played
+
+## General Instructions
+- Use environment variables for secrets and URLs
+- Ensure CORS is configured for frontend-backend communication
+- Provide clear error handling and user feedback
+- Write clean, maintainable, and well-documented code
+
+## Example Technologies
+- Python 3.11+
+- FastAPI
+- Streamlit
+- SQLAlchemy
+- Authlib
+- OpenAI API
+- SQLite
+
+## Output
+Generate all necessary code files, configuration files, and documentation to run the project locally and deploy to cloud platforms (Streamlit Cloud, Render.com).
+
+---
+This prompt should guide the LLM agent to generate a robust, production-ready trivia app with all required features and integrations.

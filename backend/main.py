@@ -10,7 +10,7 @@ import random, os, json
 from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
 
 
-from .models import User, QuestionLog
+from .models import User, TriviaLog
 from .database import SessionLocal, engine, Base
 from pydantic import BaseModel
 
@@ -198,7 +198,6 @@ def generate_questions(setup: GameSetup, authorization: Optional[str] = Header(N
         chosen_topic = random.choice(topics) if setup.topic == "random" else setup.topic
         for round_num in range(setup.rounds):
             for player in setup.players:
-                # Force prompt uniqueness by using player name and randomness
                 seed = random.randint(1000, 9999)
                 prompt = (
                     f"You are a trivia question generator. "
@@ -217,10 +216,7 @@ def generate_questions(setup: GameSetup, authorization: Optional[str] = Header(N
                         ],
                         temperature=0.8
                     )
-
-                    # Expecting a dict in the format: {"question": ..., "options": [...], "answer": ...}
                     q_json = json.loads(response.choices[0].message.content)
-
                     questions.append({
                         "player": player.name,
                         "age": player.age,
@@ -228,8 +224,18 @@ def generate_questions(setup: GameSetup, authorization: Optional[str] = Header(N
                         "topic": chosen_topic,
                         **q_json
                     })
+                    # Save question to DB for user
+                    user_obj = db.query(User).filter(User.email == user["email"]).first()
+                    if user_obj:
+                        db.add(TriviaLog(
+                            user_id=user_obj.id,
+                            topic=chosen_topic,
+                            rounds=round_num + 1
+                        ))
+                        db.commit()
                 except Exception as e:
                     questions.append({
+                        "email": user["email"],
                         "player": player.name,
                         "age": player.age,
                         "round": round_num + 1,
@@ -287,6 +293,24 @@ def generate_questions(setup: GameSetup, authorization: Optional[str] = Header(N
 
     db.commit()
     return {"questions": questions}
+
+@app.get("/user_quiz_stats")
+def user_quiz_stats():
+    db = SessionLocal()
+    # Alternatively, use a group by for efficiency
+    from sqlalchemy import func
+    stats = db.query(User.name, User.email, func.count(TriviaLog.id)).join(TriviaLog, User.id == TriviaLog.user_id).group_by(User.id).all()
+    db.close()
+    # Format output
+    output = [
+        {
+            "name": name,
+            "email": email,
+            "quizzes_played": quizzes
+        }
+        for name, email, quizzes in stats
+    ]
+    return {"user_quiz_stats": output}
 
 
 
