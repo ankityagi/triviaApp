@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 from authlib.integrations.starlette_client import OAuth
 from typing import List, Optional
 from openai import OpenAI
-import random, os, json
+import random, os, json, hashlib
 from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
 
 
@@ -102,6 +102,23 @@ class QuestionResponse(BaseModel):
     min_age: int
     max_age: int
     created_at: str
+
+class QuestionImport(BaseModel):
+    prompt: str
+    options: List[str]  # List of option strings
+    answer: str
+    topic: str
+    min_age: int
+    max_age: int
+
+class ImportRequest(BaseModel):
+    questions: List[QuestionImport]
+
+class ImportResponse(BaseModel):
+    imported_count: int
+    skipped_count: int
+    total_questions: int
+    message: str
 
 @app.get("/")
 def read_root():
@@ -370,6 +387,62 @@ def get_questions(limit: int = 10, age: Optional[int] = None, topic: Optional[st
         
         return response_questions
         
+    finally:
+        db.close()
+
+@app.post("/questions/import", response_model=ImportResponse)
+def import_questions(request: ImportRequest):
+    """
+    Admin/dev endpoint to import questions into the database.
+    Supports bulk import with content hashing to prevent duplicates.
+    """
+    db = SessionLocal()
+    imported_count = 0
+    skipped_count = 0
+    
+    try:
+        for q_import in request.questions:
+            # Create content hash for deduplication
+            content = f"{q_import.prompt}{q_import.answer}"
+            content_hash = hashlib.sha256(content.encode()).hexdigest()[:16]
+            
+            # Check if question already exists
+            existing = db.query(Question).filter(Question.hash == content_hash).first()
+            if existing:
+                skipped_count += 1
+                continue
+            
+            # Convert options list to JSON string
+            options_json = json.dumps(q_import.options)
+            
+            # Create new question
+            question = Question(
+                prompt=q_import.prompt,
+                options=options_json,
+                answer=q_import.answer,
+                topic=q_import.topic,
+                min_age=q_import.min_age,
+                max_age=q_import.max_age,
+                hash=content_hash
+            )
+            
+            db.add(question)
+            imported_count += 1
+        
+        db.commit()
+        
+        total_in_db = db.query(Question).count()
+        
+        return ImportResponse(
+            imported_count=imported_count,
+            skipped_count=skipped_count,
+            total_questions=total_in_db,
+            message=f"Successfully imported {imported_count} questions, skipped {skipped_count} duplicates. Total questions in database: {total_in_db}"
+        )
+        
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Import failed: {str(e)}")
     finally:
         db.close()
 

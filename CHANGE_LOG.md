@@ -79,3 +79,48 @@ Fresh database start to support new question management system without complex m
 - ✅ Users can receive questions from DB immediately without GPT calls
 - ✅ Questions properly filtered by age range and topic
 - ✅ Ready for Phase 2 per-user deduplication implementation
+
+### Phase 1 Step 4: Admin Import Endpoint - POST /questions/import
+**Date**: 2025-09-07  
+**Status**: ✅ Completed  
+
+#### Changes Made:
+- ✅ Implemented `POST /questions/import` endpoint for bulk question import
+- ✅ Added Pydantic models: `QuestionImport`, `ImportRequest`, `ImportResponse`
+- ✅ Implemented SHA-256 content hashing for duplicate prevention
+- ✅ Added JSON options conversion (List[str] to JSON string storage)
+- ✅ Added comprehensive error handling and transaction rollback
+- ✅ Added hashlib import for content hashing functionality
+
+#### Files Modified:
+- `backend/main.py` - Added import endpoint, models, and hashlib import
+
+#### Testing Results:
+- ✅ Successfully imported 2 new questions (Science, Geography topics)
+- ✅ Content hashing prevented 1 duplicate (existing Space question)
+- ✅ Second import correctly skipped all 3 duplicates (0 imported, 3 skipped)
+- ✅ Database now contains 5 questions across 5 topics (Animals, Space, History, Science, Geography)
+- ✅ All imported questions accessible via GET /questions endpoint
+
+#### API Usage:
+```json
+POST /questions/import
+{
+  "questions": [
+    {
+      "prompt": "Question text",
+      "options": ["Option 1", "Option 2", "Option 3", "Option 4"],
+      "answer": "Correct answer",
+      "topic": "Subject",
+      "min_age": 8,
+      "max_age": 16
+    }
+  ]
+}
+```
+
+#### Acceptance Criteria Met:
+- ✅ Admin can bulk import questions with structured format
+- ✅ Content hashing prevents duplicate imports automatically
+- ✅ Questions follow same schema as database model
+- ✅ Comprehensive response shows import statistics and total question count
