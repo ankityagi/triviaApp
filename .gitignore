@@ -73,6 +73,3 @@ staticfiles/
 
 # bfg
 ..bfg-report/
-
-# sql dbs
-*.db

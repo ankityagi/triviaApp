@@ -1,0 +1,74 @@
+High-level task receipt
+Plan: launch incrementally in three focused phases to reduce risk and deliver value early: 1) DB design for reusable, age-aware questions; 2) per-user deduplication so users never see the same question twice; 3) asynchronous/on-demand GPT generation to top up supply when a user is about to run out.
+
+## Checklist (requirements mapped)
+- Phase 1: DB design to support reuse across users and age matching. (Done when `questions` exists and can be queried by age/topic)
+- Phase 2: Ensure same user never gets the same question twice via `user_questions` usage table and atomic assignment. (Done when `GET /questions` never returns previously-seen questions for a user)
+- Phase 3: Async generation: background/queued GPT calls triggered when a user's queue is low. (Done when `POST /generate_questions_async` returns quickly and generated items become available later)
+- Frontend: show DB questions on login, prevent multiple clicks, show spinner while awaiting new questions.
+
+## Phased step-by-step implementation
+
+PHASE 1 — Database & simple query (deliver in 1–2 days)
+   1. Add tables:
+       - `questions` (id PK, prompt TEXT, options JSON, answer TEXT, topic TEXT, min_age INTEGER, max_age INTEGER, hash TEXT UNIQUE, created_at DATETIME)
+       - `user_questions` (id PK, user_id FK, question_id FK, assigned_at DATETIME, seen BOOLEAN DEFAULT FALSE)
+   2. Since it's acceptable to start the database from scratch, skip complex migrations: delete the existing SQLite DB file (if present) and recreate the schema using SQLAlchemy's `Base.metadata.create_all(bind=engine)`. No Alembic migration required for the initial rollout.
+   3. API: implement `GET /questions?limit=N&age=XX&topic=Y` that selects up to N questions filtered by age/topic without considering per-user dedupe yet (this lets the frontend show immediate content on login).
+   4. Add a small admin/dev endpoint `POST /questions/import` to seed DB from existing TriviaLog entries (backfill).
+   Acceptance criteria: A newly-logged-in user receives questions from DB immediately (no GPT call).
+
+PHASE 2 — Per-user deduplication and safe assignment (deliver next 1–2 days)
+   1. Update `GET /questions` behavior: when a user requests questions, the backend performs an atomic transaction:
+       - Find candidate question ids filtered by age/topic and NOT present in `user_questions` for that user.
+       - Insert rows into `user_questions` to mark them assigned (assigned_at NOW) so concurrent requests don't pick same question for that user.
+       - Return the questions.
+   2. Add an index on `user_questions(user_id, question_id)` for fast lookups.
+   3. Tests: unit test to simulate concurrent calls from same user and assert no duplicate assignments.
+   Acceptance criteria: Re-running `GET /questions` for same user never returns previously-assigned questions.
+
+PHASE 3 — Async on-demand GPT generation (deliver next 2–4 days)
+   1. Choose async strategy:
+       - Quick: FastAPI `BackgroundTasks` or `asyncio` + threadpool for the OpenAI client.
+       - Robust: Redis queue (RQ) or Celery if multi-process scaling is needed.
+   2. Implement `POST /generate_questions_async` with inputs (target_count, age_range, topic). It enqueues a background job and returns job_id.
+   3. Background job responsibilities:
+       - Build prompts with provided age/topic and random seeds.
+       - Call OpenAI asynchronously, parse JSON, compute a normalized SHA256 `hash` of question text+answer.
+       - Insert into `questions` using `INSERT OR IGNORE` (SQLite) or `ON CONFLICT DO NOTHING` (Postgres) to avoid duplicates.
+   4. Auto-trigger: when `GET /questions` returns fewer than requested (or user queue length ≤ threshold), the server automatically calls `generate_questions_async` for the deficit.
+   5. Add `GET /generation_status/{job_id}` for frontend polling (optional push/WS later).
+   Acceptance criteria: When DB supply is low, frontend triggers generation and new questions appear soon after without blocking the user's initial flow.
+
+Cross-cutting changes
+   - Add deterministic hashing + normalization to dedupe GPT outputs across users and generation attempts.
+   - Track `min_age`/`max_age` per question to support age-aware reuse.
+   - Instrument basic metrics (jobs enqueued, questions created, duplicates skipped).
+   - Frontend: maintain a local queue; when length ≤ threshold trigger background generation call and show spinner; disable Start/Next while request in-flight.
+
+Testing and rollout
+   - Unit tests for DB selection and dedupe logic.
+   - Integration test for background job creating questions and `GET /questions` consuming them.
+   - Rollout: enable Phase 1 in prod first, monitor usage; enable Phase 2 next; finally enable Phase 3 and tune generation rates.
+
+Quick dev commands
+```bash
+# Remove existing SQLite DB (dev only) and recreate schema
+# adjust the path below to the DB file your app uses
+rm -f ./frontend/trivia.db
+python -c "from backend.database import Base, engine; Base.metadata.create_all(bind=engine)"
+
+# Start backend dev server
+uvicorn backend.main:app --reload
+```
+
+Completion criteria
+   - Phase 1: Users see DB questions immediately on login.
+   - Phase 2: Same user never sees same question twice.
+   - Phase 3: GPT generation runs asynchronously, replenishes DB, and new questions become available without blocking the user.
+
+Notes
+   - Incremental approach reduces risk and gives users immediate value.
+   - Use careful DB transactions and unique hashes to ensure correctness under concurrency.
+
+End of incremental plan

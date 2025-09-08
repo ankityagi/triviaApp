@@ -10,14 +10,19 @@ import random, os, json
 from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
 
 
-from .models import User, TriviaLog
+from .models import User, TriviaLog, Question, UserQuestion
 from .database import SessionLocal, engine, Base
 from pydantic import BaseModel
-
+import os, pprint
 
 
 # Load environment variables
 load_dotenv()
+
+print("=== All Environment Variables ===")
+for k, v in os.environ.items():
+    print(f"{k}={v}")
+
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:8501")
 BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000")
 # Create all tables defined in models.py
@@ -87,6 +92,16 @@ class GameSetup(BaseModel):
     players: List[Player]
     rounds: int
     topic: str = "Random"
+
+class QuestionResponse(BaseModel):
+    id: int
+    prompt: str
+    options: str  # JSON as string
+    answer: str
+    topic: str
+    min_age: int
+    max_age: int
+    created_at: str
 
 @app.get("/")
 def read_root():
@@ -198,6 +213,7 @@ def generate_questions(setup: GameSetup, authorization: Optional[str] = Header(N
         chosen_topic = random.choice(topics) if setup.topic == "random" else setup.topic
         for round_num in range(setup.rounds):
             for player in setup.players:
+                # Force prompt uniqueness by using player name and randomness
                 seed = random.randint(1000, 9999)
                 prompt = (
                     f"You are a trivia question generator. "
@@ -217,6 +233,7 @@ def generate_questions(setup: GameSetup, authorization: Optional[str] = Header(N
                         temperature=0.8
                     )
                     q_json = json.loads(response.choices[0].message.content)
+
                     questions.append({
                         "player": player.name,
                         "age": player.age,
@@ -311,6 +328,50 @@ def user_quiz_stats():
         for name, email, quizzes in stats
     ]
     return {"user_quiz_stats": output}
+
+@app.get("/questions", response_model=List[QuestionResponse])
+def get_questions(limit: int = 10, age: Optional[int] = None, topic: Optional[str] = None):
+    """
+    Get questions from database filtered by age and topic.
+    Phase 1: Returns questions without per-user deduplication.
+    Phase 2 will add user-specific filtering.
+    """
+    db = SessionLocal()
+    try:
+        # Start with base query
+        query = db.query(Question)
+        
+        # Apply age filtering if provided
+        if age is not None:
+            query = query.filter(
+                (Question.min_age <= age) & (Question.max_age >= age)
+            )
+        
+        # Apply topic filtering if provided
+        if topic is not None and topic.lower() != "random":
+            query = query.filter(Question.topic.ilike(f"%{topic}%"))
+        
+        # Limit results and execute query
+        questions = query.limit(limit).all()
+        
+        # Convert to response format
+        response_questions = []
+        for q in questions:
+            response_questions.append(QuestionResponse(
+                id=q.id,
+                prompt=q.prompt,
+                options=q.options,
+                answer=q.answer,
+                topic=q.topic,
+                min_age=q.min_age,
+                max_age=q.max_age,
+                created_at=q.created_at.isoformat() if q.created_at else ""
+            ))
+        
+        return response_questions
+        
+    finally:
+        db.close()
 
 
 
