@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Request, Depends, HTTPException, Header, BackgroundTasks
+from fastapi import FastAPI, Request, Depends, HTTPException, Header, BackgroundTasks, WebSocket, WebSocketDisconnect
 from starlette.middleware.sessions import SessionMiddleware
 from fastapi.responses import RedirectResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -10,6 +10,7 @@ import random, os, json, hashlib, uuid, asyncio
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 from enum import Enum
+from typing import Dict, Set
 from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
 
 
@@ -99,6 +100,113 @@ class Metrics:
 
 metrics = Metrics()
 
+# Performance monitoring and alerting thresholds
+class AlertThresholds:
+    def __init__(self):
+        self.max_active_jobs = 15
+        self.min_success_rate = 80.0
+        self.max_avg_generation_time = 300  # 5 minutes per job
+        self.max_failed_jobs_per_hour = 10
+        self.max_duplicates_ratio = 50  # 50% duplicates is concerning
+        self.max_websocket_connections = 100
+        
+    def check_alerts(self, current_metrics):
+        alerts = []
+        
+        # Check active jobs
+        active_jobs = len([job for job in job_storage.values() 
+                          if job["status"] in [JobStatus.PENDING, JobStatus.RUNNING]])
+        if active_jobs > self.max_active_jobs:
+            alerts.append({
+                "level": "warning",
+                "type": "high_active_jobs",
+                "message": f"High number of active jobs: {active_jobs} (threshold: {self.max_active_jobs})",
+                "value": active_jobs,
+                "threshold": self.max_active_jobs
+            })
+        
+        # Check success rate
+        if (current_metrics["success_rate"] < self.min_success_rate and 
+            current_metrics["jobs_completed"] > 5):
+            alerts.append({
+                "level": "critical",
+                "type": "low_success_rate",
+                "message": f"Low success rate: {current_metrics['success_rate']:.1f}% (threshold: {self.min_success_rate}%)",
+                "value": current_metrics["success_rate"],
+                "threshold": self.min_success_rate
+            })
+        
+        # Check duplicate ratio
+        if current_metrics["questions_generated"] > 0:
+            duplicate_ratio = (current_metrics["duplicates_skipped"] / 
+                             (current_metrics["questions_generated"] + current_metrics["duplicates_skipped"]) * 100)
+            if duplicate_ratio > self.max_duplicates_ratio:
+                alerts.append({
+                    "level": "warning",
+                    "type": "high_duplicate_ratio",
+                    "message": f"High duplicate ratio: {duplicate_ratio:.1f}% (threshold: {self.max_duplicates_ratio}%)",
+                    "value": duplicate_ratio,
+                    "threshold": self.max_duplicates_ratio
+                })
+        
+        # Check WebSocket connections
+        total_connections = sum(len(connections) for connections in manager.active_connections.values())
+        if total_connections > self.max_websocket_connections:
+            alerts.append({
+                "level": "warning",
+                "type": "high_websocket_connections",
+                "message": f"High WebSocket connections: {total_connections} (threshold: {self.max_websocket_connections})",
+                "value": total_connections,
+                "threshold": self.max_websocket_connections
+            })
+        
+        return alerts
+
+alert_thresholds = AlertThresholds()
+
+# WebSocket connection manager for real-time updates
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: Dict[str, Set[WebSocket]] = {}
+    
+    async def connect(self, websocket: WebSocket, user_id: str):
+        await websocket.accept()
+        if user_id not in self.active_connections:
+            self.active_connections[user_id] = set()
+        self.active_connections[user_id].add(websocket)
+        print(f"[WEBSOCKET] User {user_id} connected. Total connections: {len(self.active_connections.get(user_id, []))}")
+    
+    def disconnect(self, websocket: WebSocket, user_id: str):
+        if user_id in self.active_connections:
+            self.active_connections[user_id].discard(websocket)
+            if not self.active_connections[user_id]:
+                del self.active_connections[user_id]
+        print(f"[WEBSOCKET] User {user_id} disconnected. Remaining connections: {len(self.active_connections.get(user_id, []))}")
+    
+    async def send_personal_message(self, message: dict, user_id: str):
+        if user_id in self.active_connections:
+            disconnected = []
+            for connection in self.active_connections[user_id].copy():
+                try:
+                    await connection.send_text(json.dumps(message))
+                except:
+                    disconnected.append(connection)
+            
+            # Clean up disconnected connections
+            for connection in disconnected:
+                self.active_connections[user_id].discard(connection)
+    
+    async def broadcast_message(self, message: dict):
+        for user_connections in self.active_connections.values():
+            for connection in user_connections.copy():
+                try:
+                    await connection.send_text(json.dumps(message))
+                except:
+                    # Remove disconnected connections
+                    user_connections.discard(connection)
+
+manager = ConnectionManager()
+
 def generate_token(user_info):
     return serializer.dumps(user_info)
 
@@ -184,7 +292,7 @@ def cleanup_old_jobs(max_age_hours: int = 24):
     
     return len(jobs_to_remove)
 
-def generate_questions_background(job_id: str, target_count: int, age_range: Optional[tuple[int, int]] = None, topic: Optional[str] = None):
+async def generate_questions_background(job_id: str, target_count: int, age_range: Optional[tuple[int, int]] = None, topic: Optional[str] = None):
     """
     Background task to generate questions using OpenAI API.
     Updates job status in job_storage as it progresses.
@@ -192,6 +300,16 @@ def generate_questions_background(job_id: str, target_count: int, age_range: Opt
     print(f"[BACKGROUND] Starting question generation job {job_id}")
     job_storage[job_id]["status"] = JobStatus.RUNNING
     job_storage[job_id]["message"] = "Generating questions..."
+    
+    # Send WebSocket update
+    user_email = job_storage[job_id].get("user_email")
+    if user_email:
+        await manager.send_personal_message({
+            "type": "job_update",
+            "job_id": job_id,
+            "status": "running",
+            "message": "Starting question generation..."
+        }, user_email)
     
     try:
         db = SessionLocal()
@@ -310,6 +428,18 @@ def generate_questions_background(job_id: str, target_count: int, age_range: Opt
                 job_storage[job_id]["generated_count"] = generated_count
                 job_storage[job_id]["message"] = f"Generated {generated_count}/{target_count} questions"
                 
+                # Send WebSocket progress update
+                if user_email:
+                    await manager.send_personal_message({
+                        "type": "job_progress",
+                        "job_id": job_id,
+                        "status": "running",
+                        "progress": generated_count / target_count * 100,
+                        "generated_count": generated_count,
+                        "target_count": target_count,
+                        "message": f"Generated {generated_count}/{target_count} questions"
+                    }, user_email)
+                
                 print(f"[BACKGROUND] Job {job_id}: Successfully generated question {generated_count}/{target_count}")
                 
             except Exception as e:
@@ -325,6 +455,17 @@ def generate_questions_background(job_id: str, target_count: int, age_range: Opt
         # Update metrics
         metrics.jobs_completed += 1
         
+        # Send WebSocket completion update
+        if user_email:
+            await manager.send_personal_message({
+                "type": "job_completed",
+                "job_id": job_id,
+                "status": "completed",
+                "generated_count": generated_count,
+                "target_count": target_count,
+                "message": f"Successfully generated {generated_count} questions"
+            }, user_email)
+        
         print(f"[BACKGROUND] Job {job_id}: Completed with {generated_count} questions generated")
         db.close()
         
@@ -336,6 +477,15 @@ def generate_questions_background(job_id: str, target_count: int, age_range: Opt
         
         # Update metrics
         metrics.jobs_failed += 1
+        
+        # Send WebSocket failure update
+        if user_email:
+            await manager.send_personal_message({
+                "type": "job_failed",
+                "job_id": job_id,
+                "status": "failed",
+                "message": f"Job failed: {str(e)}"
+            }, user_email)
         
         print(f"[BACKGROUND] Job {job_id}: Failed with error: {str(e)}")
         try:
@@ -743,14 +893,16 @@ def get_questions(limit: int = 10, age: Optional[int] = None, topic: Optional[st
                     "auto_triggered": True
                 }
                 
-                # Submit to thread pool instead of using BackgroundTasks since we're not in async context
-                thread_pool.submit(
-                    generate_questions_background,
-                    job_id,
-                    target_count,
-                    (age, age) if age else None,
-                    topic
-                )
+                # Submit to thread pool with asyncio wrapper
+                def run_async_background():
+                    asyncio.run(generate_questions_background(
+                        job_id,
+                        target_count,
+                        (age, age) if age else None,
+                        topic
+                    ))
+                
+                thread_pool.submit(run_async_background)
                 
                 # Update metrics
                 metrics.jobs_enqueued += 1
@@ -861,14 +1013,16 @@ async def generate_questions_async(
         "user_email": user_info["email"]
     }
     
-    # Add background task
-    background_tasks.add_task(
-        generate_questions_background,
-        job_id,
-        request.target_count,
-        request.age_range,
-        request.topic
-    )
+    # Add background task with async support
+    def run_async_background():
+        asyncio.run(generate_questions_background(
+            job_id,
+            request.target_count,
+            request.age_range,
+            request.topic
+        ))
+    
+    background_tasks.add_task(run_async_background)
     
     # Update metrics
     metrics.jobs_enqueued += 1
@@ -949,6 +1103,63 @@ async def get_metrics(authorization: Optional[str] = Header(None)):
     
     return current_metrics
 
+@app.websocket("/ws/{user_email}")
+async def websocket_endpoint(websocket: WebSocket, user_email: str):
+    """
+    WebSocket endpoint for real-time job status updates.
+    Clients can connect and receive live updates about their question generation jobs.
+    """
+    await manager.connect(websocket, user_email)
+    try:
+        # Send initial connection confirmation
+        await manager.send_personal_message({
+            "type": "connection_established",
+            "message": f"Connected to real-time updates for {user_email}"
+        }, user_email)
+        
+        # Keep connection alive and handle incoming messages
+        while True:
+            try:
+                data = await websocket.receive_text()
+                message = json.loads(data)
+                
+                # Handle different message types
+                if message.get("type") == "ping":
+                    await manager.send_personal_message({
+                        "type": "pong",
+                        "timestamp": datetime.now().isoformat()
+                    }, user_email)
+                elif message.get("type") == "get_jobs":
+                    # Send current job status for this user
+                    user_jobs = [
+                        {
+                            "job_id": job_id,
+                            "status": job_data["status"],
+                            "target_count": job_data.get("target_count", 0),
+                            "generated_count": job_data.get("generated_count", 0),
+                            "message": job_data.get("message", ""),
+                            "created_at": job_data.get("created_at", ""),
+                            "completed_at": job_data.get("completed_at")
+                        }
+                        for job_id, job_data in job_storage.items()
+                        if job_data.get("user_email") == user_email
+                    ]
+                    await manager.send_personal_message({
+                        "type": "jobs_status",
+                        "jobs": user_jobs
+                    }, user_email)
+                    
+            except WebSocketDisconnect:
+                break
+            except Exception as e:
+                print(f"[WEBSOCKET] Error handling message from {user_email}: {e}")
+                break
+                
+    except WebSocketDisconnect:
+        pass
+    finally:
+        manager.disconnect(websocket, user_email)
+
 @app.post("/admin/cleanup_jobs")
 async def cleanup_jobs(authorization: Optional[str] = Header(None)):
     """
@@ -970,5 +1181,227 @@ async def cleanup_jobs(authorization: Optional[str] = Header(None)):
         "message": f"Cleaned up {removed_count} old jobs",
         "removed_count": removed_count,
         "remaining_jobs": len(job_storage)
+    }
+
+@app.get("/health")
+async def health_check():
+    """
+    Basic health check endpoint for load balancers and monitoring systems.
+    Returns simple OK status with minimal processing.
+    """
+    return {
+        "status": "healthy",
+        "timestamp": datetime.now().isoformat(),
+        "service": "trivia-backend"
+    }
+
+@app.get("/health/detailed")
+async def detailed_health_check():
+    """
+    Detailed health check with system component validation.
+    Checks database connectivity, job system status, and metrics.
+    """
+    health_status = {
+        "status": "healthy",
+        "timestamp": datetime.now().isoformat(),
+        "service": "trivia-backend",
+        "checks": {}
+    }
+    
+    # Database health check
+    try:
+        db = SessionLocal()
+        db.execute("SELECT 1")
+        db.close()
+        health_status["checks"]["database"] = {
+            "status": "healthy",
+            "message": "Database connection successful"
+        }
+    except Exception as e:
+        health_status["status"] = "unhealthy"
+        health_status["checks"]["database"] = {
+            "status": "unhealthy",
+            "message": f"Database connection failed: {str(e)}"
+        }
+    
+    # OpenAI API health check (optional - only if API key is available)
+    try:
+        if api_key:
+            # Quick test - just validate client initialization
+            test_client = OpenAI(api_key=api_key)
+            health_status["checks"]["openai"] = {
+                "status": "healthy",
+                "message": "OpenAI client initialized successfully"
+            }
+        else:
+            health_status["checks"]["openai"] = {
+                "status": "warning", 
+                "message": "OpenAI API key not configured"
+            }
+    except Exception as e:
+        health_status["checks"]["openai"] = {
+            "status": "warning",
+            "message": f"OpenAI client issue: {str(e)}"
+        }
+    
+    # Job system health check
+    active_jobs = len([job for job in job_storage.values() if job["status"] in [JobStatus.PENDING, JobStatus.RUNNING]])
+    total_jobs = len(job_storage)
+    
+    if active_jobs > 10:  # Threshold for too many active jobs
+        health_status["status"] = "warning"
+        health_status["checks"]["job_system"] = {
+            "status": "warning",
+            "message": f"High number of active jobs: {active_jobs}",
+            "active_jobs": active_jobs,
+            "total_jobs": total_jobs
+        }
+    else:
+        health_status["checks"]["job_system"] = {
+            "status": "healthy",
+            "message": "Job system operating normally",
+            "active_jobs": active_jobs,
+            "total_jobs": total_jobs
+        }
+    
+    # WebSocket connections health
+    total_connections = sum(len(connections) for connections in manager.active_connections.values())
+    health_status["checks"]["websocket"] = {
+        "status": "healthy",
+        "message": f"WebSocket manager operational",
+        "active_connections": total_connections,
+        "connected_users": len(manager.active_connections)
+    }
+    
+    # Memory/performance indicators
+    current_metrics = metrics.to_dict()
+    if current_metrics["success_rate"] < 80 and current_metrics["jobs_completed"] > 10:
+        health_status["status"] = "warning" 
+        health_status["checks"]["performance"] = {
+            "status": "warning",
+            "message": f"Low success rate: {current_metrics['success_rate']:.1f}%"
+        }
+    else:
+        health_status["checks"]["performance"] = {
+            "status": "healthy",
+            "message": "Performance metrics within normal range",
+            "success_rate": current_metrics["success_rate"],
+            "questions_per_minute": current_metrics["questions_per_minute"]
+        }
+    
+    return health_status
+
+@app.get("/health/ready")
+async def readiness_check():
+    """
+    Readiness check for Kubernetes/container orchestration.
+    Verifies the service is ready to handle requests.
+    """
+    try:
+        # Check database connection
+        db = SessionLocal()
+        db.execute("SELECT 1")
+        db.close()
+        
+        # Check if critical components are initialized
+        if not metrics or not manager:
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "status": "not_ready",
+                    "message": "Critical components not initialized"
+                }
+            )
+        
+        return {
+            "status": "ready",
+            "timestamp": datetime.now().isoformat(),
+            "message": "Service ready to handle requests"
+        }
+        
+    except Exception as e:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "status": "not_ready",
+                "message": f"Service not ready: {str(e)}"
+            }
+        )
+
+@app.get("/alerts")
+async def get_alerts(authorization: Optional[str] = Header(None)):
+    """
+    Get current system alerts based on performance thresholds.
+    Returns warnings and critical alerts for monitoring systems.
+    """
+    # Authentication required
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Authentication required")
+    
+    token = authorization.split(" ", 1)[1]
+    user_info = verify_token(token)
+    if not user_info:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    
+    # Get current metrics and check for alerts
+    current_metrics = metrics.to_dict()
+    alerts = alert_thresholds.check_alerts(current_metrics)
+    
+    return {
+        "timestamp": datetime.now().isoformat(),
+        "alert_count": len(alerts),
+        "critical_alerts": len([a for a in alerts if a["level"] == "critical"]),
+        "warning_alerts": len([a for a in alerts if a["level"] == "warning"]),
+        "alerts": alerts,
+        "system_status": "critical" if any(a["level"] == "critical" for a in alerts) else 
+                        "warning" if alerts else "healthy"
+    }
+
+@app.get("/performance/summary")
+async def get_performance_summary(authorization: Optional[str] = Header(None)):
+    """
+    Get performance summary with key metrics and trends.
+    """
+    # Authentication required
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Authentication required")
+    
+    token = authorization.split(" ", 1)[1]
+    user_info = verify_token(token)
+    if not user_info:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    
+    current_metrics = metrics.to_dict()
+    
+    # Calculate additional performance indicators
+    active_jobs = len([job for job in job_storage.values() 
+                      if job["status"] in [JobStatus.PENDING, JobStatus.RUNNING]])
+    
+    total_connections = sum(len(connections) for connections in manager.active_connections.values())
+    
+    # Calculate duplicate ratio
+    duplicate_ratio = 0
+    if current_metrics["questions_generated"] > 0:
+        duplicate_ratio = (current_metrics["duplicates_skipped"] / 
+                         (current_metrics["questions_generated"] + current_metrics["duplicates_skipped"]) * 100)
+    
+    return {
+        "timestamp": datetime.now().isoformat(),
+        "performance_score": min(100, max(0, current_metrics["success_rate"])),
+        "key_metrics": {
+            "questions_per_minute": current_metrics["questions_per_minute"],
+            "success_rate": current_metrics["success_rate"],
+            "active_jobs": active_jobs,
+            "duplicate_ratio": round(duplicate_ratio, 2),
+            "websocket_connections": total_connections,
+            "uptime_hours": round(current_metrics["uptime_seconds"] / 3600, 2)
+        },
+        "thresholds": {
+            "max_active_jobs": alert_thresholds.max_active_jobs,
+            "min_success_rate": alert_thresholds.min_success_rate,
+            "max_duplicates_ratio": alert_thresholds.max_duplicates_ratio,
+            "max_websocket_connections": alert_thresholds.max_websocket_connections
+        },
+        "alerts": alert_thresholds.check_alerts(current_metrics)
     }
 
