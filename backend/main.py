@@ -7,6 +7,7 @@ from authlib.integrations.starlette_client import OAuth
 from typing import List, Optional
 from openai import OpenAI
 import random, os, json, hashlib
+from datetime import datetime
 from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
 
 
@@ -347,15 +348,30 @@ def user_quiz_stats():
     return {"user_quiz_stats": output}
 
 @app.get("/questions", response_model=List[QuestionResponse])
-def get_questions(limit: int = 10, age: Optional[int] = None, topic: Optional[str] = None):
+def get_questions(limit: int = 10, age: Optional[int] = None, topic: Optional[str] = None, authorization: Optional[str] = Header(None)):
     """
-    Get questions from database filtered by age and topic.
-    Phase 1: Returns questions without per-user deduplication.
-    Phase 2 will add user-specific filtering.
+    Get questions from database filtered by age, topic, and user assignment history.
+    Phase 2: Includes per-user deduplication with atomic assignment.
+    Users must authenticate to receive questions.
     """
+    # Phase 2: Require authentication
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Authentication required")
+    
+    token = authorization.split(" ", 1)[1]
+    user_info = verify_token(token)
+    if not user_info:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    
     db = SessionLocal()
     try:
-        # Start with base query
+        # Get user from database
+        user = db.query(User).filter(User.email == user_info["email"]).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        # Phase 2: Atomic transaction for question assignment
+        # Find candidate questions filtered by age/topic and NOT already assigned to user
         query = db.query(Question)
         
         # Apply age filtering if provided
@@ -368,25 +384,56 @@ def get_questions(limit: int = 10, age: Optional[int] = None, topic: Optional[st
         if topic is not None and topic.lower() != "random":
             query = query.filter(Question.topic.ilike(f"%{topic}%"))
         
-        # Limit results and execute query
-        questions = query.limit(limit).all()
+        # Phase 2: Exclude questions already assigned to this user
+        already_assigned_subquery = db.query(UserQuestion.question_id).filter(
+            UserQuestion.user_id == user.id
+        ).subquery()
         
-        # Convert to response format
-        response_questions = []
-        for q in questions:
-            response_questions.append(QuestionResponse(
-                id=q.id,
-                prompt=q.prompt,
-                options=q.options,
-                answer=q.answer,
-                topic=q.topic,
-                min_age=q.min_age,
-                max_age=q.max_age,
-                created_at=q.created_at.isoformat() if q.created_at else ""
+        query = query.filter(
+            ~Question.id.in_(db.query(already_assigned_subquery.c.question_id))
+        )
+        
+        # Get available questions
+        available_questions = query.limit(limit).all()
+        
+        if not available_questions:
+            return []
+        
+        # Phase 2: Atomically assign questions to user
+        assigned_questions = []
+        for question in available_questions:
+            # Create user_question assignment record
+            user_question = UserQuestion(
+                user_id=user.id,
+                question_id=question.id,
+                assigned_at=datetime.now(),
+                seen=False
+            )
+            db.add(user_question)
+            
+            # Add to response
+            assigned_questions.append(QuestionResponse(
+                id=question.id,
+                prompt=question.prompt,
+                options=question.options,
+                answer=question.answer,
+                topic=question.topic,
+                min_age=question.min_age,
+                max_age=question.max_age,
+                created_at=question.created_at.isoformat() if question.created_at else ""
             ))
         
-        return response_questions
+        # Commit the assignments
+        db.commit()
         
+        return assigned_questions
+        
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to get questions: {str(e)}")
     finally:
         db.close()
 
