@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Text, Boolean
+from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Text, Boolean, Index
 from sqlalchemy.orm import declarative_base
 from datetime import datetime
 from .database import Base
@@ -58,3 +58,8 @@ class UserQuestion(Base):
     question_id = Column(Integer, ForeignKey("questions.id"), index=True)  # Which question was assigned
     assigned_at = Column(DateTime, default=datetime.utcnow)             # When assignment occurred
     seen = Column(Boolean, default=False)                              # Whether user has seen/answered it
+    
+    # Composite index for efficient user+question lookups
+    __table_args__ = (
+        Index('ix_user_question_composite', 'user_id', 'question_id'),
+    )
